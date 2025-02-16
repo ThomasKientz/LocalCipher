@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CipherLink</title>
+    <style>
+      /* Global Styling */
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      /* Container styling: now full width with small padding */
+      .container {
+        padding: 1rem;
+      }
+
+      /* Headings */
+      h1 {
+        text-align: center;
+        margin-bottom: 1.5rem;
+        color: #333;
+        font-size: 2.2em;
+      }
+
+      h2 {
+        color: #444;
+        margin-bottom: 1rem;
+      }
+
+      /* Sections */
+      .section {
+        display: none; /* sections are dynamically shown */
+        margin-bottom: 2rem;
+      }
+
+      /* Inputs, text area and buttons */
+      textarea,
+      input[type="password"],
+      input[type="text"] {
+        width: 100%;
+        padding: 0.75rem;
+        margin-bottom: 1rem;
+        font-size: 1rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+
+      textarea {
+        height: 100px;
+        resize: vertical;
+      }
+
+      button {
+        width: 100%;
+        background-color: #2575fc;
+        color: #fff;
+        border: none;
+        padding: 0.75rem;
+        font-size: 1rem;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.3s ease;
+      }
+
+      @media (min-width: 600px) {
+        button {
+          max-width: 300px;
+        }
+      }
+
+      button:hover {
+        background-color: #1a5dcc;
+      }
+
+      .alert {
+        color: #d33;
+        font-weight: bold;
+      }
+
+      .result-link {
+        word-wrap: break-word;
+        background: #f9f9f9;
+        padding: 0.75rem;
+        border: 1px solid #eee;
+        border-radius: 4px;
+      }
+
+      /* Responsive adjustments */
+      @media (max-width: 600px) {
+        h1 {
+          font-size: 1.8em;
+        }
+        button,
+        textarea,
+        input {
+          font-size: 0.95rem;
+        }
+      }
+
+      /* Update input placeholder styling */
+      textarea::placeholder,
+      input::placeholder {
+        color: #999;
+        font-size: 1rem;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <!-- ENCRYPTION SECTION -->
+      <div id="encryptSection" class="section">
+        <textarea
+          id="message"
+          placeholder="Enter your message here..."
+        ></textarea>
+        <input
+          id="passwordEncrypt"
+          type="password"
+          placeholder="Password for encryption"
+        />
+        <button id="btnEncrypt">Get link</button>
+        <div id="encryptResult" style="margin-top: 1rem"></div>
+      </div>
+
+      <!-- DECRYPTION SECTION -->
+      <div id="decryptSection" class="section">
+        <input id="passwordDecrypt" type="password" placeholder="Password" />
+        <button id="btnDecrypt">Decrypt</button>
+        <p id="decryptResult" style="margin-top: 1rem"></p>
+        <p id="decryptError" class="alert"></p>
+      </div>
+    </div>
+
+    <script>
+      // On page load, check if there is a hash in the URL to show the appropriate section
+      document.addEventListener("DOMContentLoaded", () => {
+        const hash = window.location.hash.substring(1);
+        if (hash) {
+          document.getElementById("decryptSection").style.display = "block";
+        } else {
+          document.getElementById("encryptSection").style.display = "block";
+        }
+      });
+
+      /**
+       * Convert a Base64 string to a Uint8Array.
+       */
+      function base64ToUint8Array(base64) {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
+      }
+
+      /**
+       * Convert a Uint8Array to a Base64 string.
+       */
+      function uint8ArrayToBase64(bytes) {
+        let binary = "";
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+      }
+
+      /**
+       * Derive a key from a plain password using PBKDF2.
+       */
+      async function getKey(password, salt) {
+        const enc = new TextEncoder();
+        const passphraseKey = enc.encode(password);
+
+        // Create a key for PBKDF2 based on the raw password bytes
+        const baseKey = await crypto.subtle.importKey(
+          "raw",
+          passphraseKey,
+          { name: "PBKDF2" },
+          false,
+          ["deriveBits", "deriveKey"]
+        );
+
+        // Derive the actual AES-GCM key using PBKDF2
+        return crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt,
+            iterations: 100000,
+            hash: "SHA-256",
+          },
+          baseKey,
+          { name: "AES-GCM", length: 256 },
+          false,
+          ["encrypt", "decrypt"]
+        );
+      }
+
+      /**
+       * Encrypts a message (string) with a password (string).
+       * Returns a Base64 string combining salt + IV + ciphertext.
+       */
+      async function encryptMessage(message, password) {
+        const enc = new TextEncoder();
+        const encodedMessage = enc.encode(message);
+
+        // Generate a random 16-byte salt for PBKDF2
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        // Derive an AES-GCM key
+        const key = await getKey(password, salt);
+
+        // Generate a random 12-byte IV for AES-GCM
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+
+        // Encrypt the message
+        const ciphertext = new Uint8Array(
+          await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv },
+            key,
+            encodedMessage
+          )
+        );
+
+        // Combine salt + IV + ciphertext into a single array
+        const combined = new Uint8Array(
+          salt.byteLength + iv.byteLength + ciphertext.byteLength
+        );
+        combined.set(salt, 0);
+        combined.set(iv, salt.byteLength);
+        combined.set(ciphertext, salt.byteLength + iv.byteLength);
+
+        // Return as Base64
+        return uint8ArrayToBase64(combined);
+      }
+
+      /**
+       * Decrypts a Base64 string (containing salt+IV+ciphertext) with a password.
+       * Returns the original message (string) or throws an error on failure.
+       */
+      async function decryptMessage(base64Data, password) {
+        try {
+          // Decode from Base64
+          const combined = base64ToUint8Array(base64Data);
+
+          // Extract salt (16 bytes) + IV (12 bytes) + ciphertext (remaining)
+          const salt = combined.slice(0, 16);
+          const iv = combined.slice(16, 28);
+          const ciphertext = combined.slice(28);
+
+          // Derive the same AES-GCM key
+          const key = await getKey(password, salt);
+
+          // Decrypt the ciphertext
+          const decrypted = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            key,
+            ciphertext
+          );
+
+          // Convert decrypted bytes to string
+          const dec = new TextDecoder();
+          return dec.decode(decrypted);
+        } catch (error) {
+          // Throw an error if something went wrong
+          throw new Error("Incorrect password or invalid data.");
+        }
+      }
+
+      // === Encryption ===
+      document
+        .getElementById("btnEncrypt")
+        .addEventListener("click", async () => {
+          const message = document.getElementById("message").value.trim();
+          const password = document.getElementById("passwordEncrypt").value;
+
+          if (!message) {
+            alert("Please enter a message to encrypt!");
+            return;
+          }
+          if (!password) {
+            alert("Please enter a password!");
+            return;
+          }
+
+          try {
+            // Encrypt the message
+            const ciphertext = await encryptMessage(message, password);
+            // Generate the URL with the ciphertext in the fragment
+            const url =
+              window.location.origin +
+              window.location.pathname +
+              "#" +
+              encodeURIComponent(ciphertext);
+
+            const encryptResultDiv = document.getElementById("encryptResult");
+            encryptResultDiv.innerHTML = `
+            <p class="result-link"><a href="${url}">${url}</a></p>
+            <p >Copied to clipboard!</p>
+            `;
+
+            // Copy to clipboard
+            await navigator.clipboard.writeText(url);
+          } catch (err) {
+            alert("Encryption error: " + err.message);
+          }
+        });
+
+      // === Decryption ===
+      document
+        .getElementById("btnDecrypt")
+        .addEventListener("click", async () => {
+          const hash = window.location.hash.substring(1); // The encoded ciphertext
+          const password = document.getElementById("passwordDecrypt").value;
+          const decryptResult = document.getElementById("decryptResult");
+          const decryptError = document.getElementById("decryptError");
+
+          decryptResult.textContent = "";
+          decryptError.textContent = "";
+
+          if (!hash) {
+            decryptError.textContent = "No encrypted text found in the URL.";
+            return;
+          }
+          if (!password) {
+            decryptError.textContent = "Please enter a password.";
+            return;
+          }
+
+          try {
+            const ciphertext = decodeURIComponent(hash);
+            const originalText = await decryptMessage(ciphertext, password);
+            decryptResult.innerHTML = `Decrypted message:<br>${originalText}`;
+
+            // Copy decrypted message to clipboard
+            await navigator.clipboard.writeText(originalText);
+            decryptResult.innerHTML = `Decrypted message (copied to clipboard):<br><br>${originalText}`;
+          } catch (err) {
+            decryptError.textContent = err.message;
+          }
+        });
+    </script>
+  </body>
+</html>
